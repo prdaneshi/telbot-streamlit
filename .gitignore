@@ -1,0 +1,6 @@
+.env
+bot_data.db*
+bot.pid
+bot.log
+__pycache__/
+.venv/
