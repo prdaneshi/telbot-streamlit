@@ -1,28 +1,26 @@
-"""ربات تلگرام — با python-telegram-bot اجرا می‌شود.
+"""ربات تلگرام — با Telethon (پروتکل MTProto) اجرا می‌شود.
+
+مزیت: پشتیبانی از پروکسی‌های MTProto (لینک‌های t.me/proxy) که
+Bot API آن‌ها را نمی‌فهمد.
 
 اجرا:  python bot.py
 """
 from __future__ import annotations
 
 import logging
+import sys
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.constants import ParseMode
-from telegram.ext import (
-    Application,
-    CallbackQueryHandler,
-    CommandHandler,
-    ContextTypes,
-    MessageHandler,
-    filters,
-)
+from telethon import TelegramClient, events
+from telethon.tl.custom import Button
 
 import database
-from config import get_proxy, get_token
+from config import get_token
+from tg_client import make_client
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
+    stream=sys.stdout,
 )
 log = logging.getLogger("bot")
 
@@ -32,21 +30,21 @@ WELCOME = (
     "هر متنی بفرستید تا پاسخ بگیرید، یا از دکمه‌های زیر استفاده کنید."
 )
 
-MAIN_KEYBOARD = InlineKeyboardMarkup(
+MAIN_KEYBOARD = [
     [
-        [InlineKeyboardButton("ℹ️ درباره ربات", callback_data="about"),
-         InlineKeyboardButton("❓ راهنما", callback_data="help")],
-        [InlineKeyboardButton("💬 تماس با ادمین", callback_data="contact")],
-    ]
-)
+        Button.inline("ℹ️ درباره ربات", b"about"),
+        Button.inline("❓ راهنما", b"help"),
+    ],
+    [Button.inline("💬 تماس با ادمین", b"contact")],
+]
 
 ABOUT_TEXT = (
-    "🤖 *درباره ربات*\n\n"
-    "این ربات با `python-telegram-bot` نوشته شده و یک پنل مدیریت "
+    "🤖 **درباره ربات**\n\n"
+    "این ربات با `Telethon` نوشته شده و یک پنل مدیریت "
     "Streamlit هم کنارش دارد."
 )
 HELP_TEXT = (
-    "❓ *راهنما*\n\n"
+    "❓ **راهنما**\n\n"
     "• /start — شروع و نمایش منو\n"
     "• هر متنی بفرستید تا پاسخ بگیرید\n"
     "• با دکمه‌ی «تماس با ادمین» می‌توانید پیام بدهید"
@@ -56,73 +54,62 @@ CONTACT_TEXT = (
     "ادمین از پنل مدیریت پاسخ شما را می‌فرستد."
 )
 
-# بعد از این که کاربر «تماس با ادمین» را زد، پیام‌هایش دیگر echo نمی‌شود
-FLAG_CONTACT = "awaiting_contact"
+# بعد از «تماس با ادمین»، پیام بعدی کاربر دیگر echo نمی‌شود
+awaiting_contact: set[int] = set()
+
+client = make_client("bot_session")
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    database.upsert_user(user.id, user.first_name, user.username)
-    database.log_message(user.id, "in", "/start")
-    reply = WELCOME.format(name=user.first_name or "دوست من")
-    await update.message.reply_text(reply, reply_markup=MAIN_KEYBOARD)
-    database.log_message(user.id, "out", reply)
+@client.on(events.NewMessage(pattern=r"^/start"))
+async def start(event: events.NewMessage.Event) -> None:
+    sender = await event.get_sender()
+    database.upsert_user(event.chat_id, sender.first_name, sender.username)
+    database.log_message(event.chat_id, "in", "/start")
+    reply = WELCOME.format(name=sender.first_name or "دوست من")
+    await event.respond(reply, buttons=MAIN_KEYBOARD)
+    database.log_message(event.chat_id, "out", reply)
+    raise events.StopPropagation  # تا دسترسِ on_text نیفتد
 
 
-async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    user = query.from_user
-    database.upsert_user(user.id, user.first_name, user.username)
-    database.log_message(user.id, "in", f"[دکمه: {query.data}]")
+@client.on(events.CallbackQuery)
+async def on_button(event: events.CallbackQuery.Event) -> None:
+    sender = await event.get_sender()
+    data = event.data.decode() if event.data else ""
+    database.upsert_user(event.chat_id, sender.first_name, sender.username)
+    database.log_message(event.chat_id, "in", f"[دکمه: {data}]")
+    await event.answer()
 
     texts = {"about": ABOUT_TEXT, "help": HELP_TEXT, "contact": CONTACT_TEXT}
-    reply = texts.get(query.data, "گزینه ناشناخته 🙂")
-    await query.edit_message_text(reply, parse_mode=ParseMode.MARKDOWN)
-    database.log_message(user.id, "out", reply)
+    reply = texts.get(data, "گزینه ناشناخته 🙂")
+    await event.edit(reply, parse_mode="md")
+    database.log_message(event.chat_id, "out", reply)
 
-    if query.data == "contact":
-        context.user_data[FLAG_CONTACT] = True
+    if data == "contact":
+        awaiting_contact.add(event.chat_id)
 
 
-async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = update.effective_user
-    text = update.message.text or ""
-    database.upsert_user(user.id, user.first_name, user.username)
-    database.log_message(user.id, "in", text)
+@client.on(events.NewMessage(incoming=True))
+async def on_text(event: events.NewMessage.Event) -> None:
+    text = event.message.message or ""
+    sender = await event.get_sender()
+    database.upsert_user(event.chat_id, sender.first_name, sender.username)
+    database.log_message(event.chat_id, "in", text)
 
-    if context.user_data.get(FLAG_CONTACT):
+    if event.chat_id in awaiting_contact:
         # پیام کاربر برای ادمین ثبت شده؛ فقط تأیید می‌دهیم
-        context.user_data[FLAG_CONTACT] = False
+        awaiting_contact.discard(event.chat_id)
         reply = "✅ پیام شما ثبت شد؛ به‌زودی پاسخ می‌گیرید."
     else:
         reply = f"پیام شما را دریافت کردم: «{text}»\nبرای منو /start را بزنید."
 
-    await update.message.reply_text(reply)
-    database.log_message(user.id, "out", reply)
+    await event.respond(reply)
+    database.log_message(event.chat_id, "out", reply)
 
 
 def main() -> None:
-    token = get_token()
-    if not token:
-        raise SystemExit(
-            "توکن یافت نشد! TELEGRAM_BOT_TOKEN را در فایل .env یا متغیر محیطی بگذارید."
-        )
-
-    database.init_db()
-    proxy = get_proxy()
-    builder = Application.builder().token(token)
-    if proxy:
-        log.info("استفاده از پروکسی: %s", proxy)
-        builder = builder.proxy(proxy).get_updates_proxy(proxy)
-    app = builder.build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(on_button))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
-
     log.info("ربات راه‌اندازی شد — برای توقف Ctrl+C")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    client.start(bot_token=get_token())
+    client.run_until_disconnected()
 
 
 if __name__ == "__main__":

@@ -9,15 +9,12 @@ import sys
 from pathlib import Path
 
 import pandas as pd
-import requests
 import streamlit as st
 
 import database
 from config import BASE_DIR, PID_PATH, get_proxy, get_token, save_token
 
 st.set_page_config(page_title="پنل مدیریت ربات", page_icon="🤖", layout="wide")
-
-API_BASE = "https://api.telegram.org/bot{token}/{method}"
 
 
 # ---------------------------------------------------------------- کنترل ربات
@@ -62,16 +59,19 @@ def stop_bot(pid: int) -> None:
     PID_PATH.unlink(missing_ok=True)
 
 
-def tg_call(method: str, **params) -> dict:
-    """فراخوانی مستقیم Bot API برای ارسال پیام از پنل."""
-    token = get_token()
-    proxy = get_proxy()
-    proxies = {"http": proxy, "https": proxy} if proxy else None
-    resp = requests.post(
-        API_BASE.format(token=token, method=method),
-        json=params, timeout=15, proxies=proxies,
+def send_messages(chat_ids: list, text: str) -> list[dict]:
+    """ارسال پیام از طریق Telethon — فراخوانی sender.py به صورت زیرپروسه."""
+    import json as _json
+
+    proc = subprocess.run(
+        [sys.executable, str(BASE_DIR / "sender.py")],
+        input=_json.dumps({"chat_ids": chat_ids, "text": text}),
+        capture_output=True, text=True, timeout=600,
+        cwd=BASE_DIR, encoding="utf-8",
     )
-    return resp.json()
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip()[-1000:] or "sender.py failed")
+    return _json.loads(proc.stdout)["results"]
 
 
 # ---------------------------------------------------------------- صفحه
@@ -187,26 +187,24 @@ with tab_send:
     target = st.selectbox("گیرنده", list(options.keys()))
     text = st.text_area("متن پیام")
     if st.button("📨 ارسال", disabled=not (target and text.strip())):
-        result = tg_call("sendMessage", chat_id=options[target], text=text.strip())
-        if result.get("ok"):
-            database.log_message(options[target], "out", text.strip())
-            st.success("ارسال شد ✅")
-        else:
-            st.error(f"خطا: {result.get('description')}")
+        try:
+            (result,) = send_messages([options[target]], text.strip())
+            if result["ok"]:
+                st.success("ارسال شد ✅")
+            else:
+                st.error(f"خطا: {result.get('error')}")
+        except Exception as err:
+            st.error(f"خطا در ارسال: {err}")
 
     st.divider()
     st.subheader("ارسال انبوه به همه کاربران")
     bulk = st.text_area("متن پیام انبوه")
     if st.button("📢 ارسال به همه", disabled=not bulk.strip()):
-        ok = fail = 0
-        bar = st.progress(0.0)
         chat_ids = list(options.values())
-        for i, chat_id in enumerate(chat_ids, 1):
-            result = tg_call("sendMessage", chat_id=chat_id, text=bulk.strip())
-            if result.get("ok"):
-                database.log_message(chat_id, "out", bulk.strip())
-                ok += 1
-            else:
-                fail += 1
-            bar.progress(i / len(chat_ids))
-        st.info(f"✅ {ok} موفق — ❌ {fail} ناموفق")
+        with st.spinner(f"در حال ارسال به {len(chat_ids)} کاربر..."):
+            try:
+                results = send_messages(chat_ids, bulk.strip())
+                ok = sum(1 for r in results if r["ok"])
+                st.info(f"✅ {ok} موفق — ❌ {len(results) - ok} ناموفق")
+            except Exception as err:
+                st.error(f"خطا در ارسال انبوه: {err}")

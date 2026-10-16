@@ -3,14 +3,19 @@
 یک ربات تلگرام ساده (پاسخ به /start، دکمه‌های شیشه‌ای، پاسخ به متن)
 همراه با یک پنل مدیریت کامل ساخته‌شده با Streamlit.
 
+ربات با **Telethon** (پروتکل MTProto) کار می‌کند، بنابراین از
+**پروکسی‌های MTProto** (لینک‌های `t.me/proxy`) هم پشتیبانی می‌کند.
+
 ## ساختار پروژه
 
 | فایل | نقش |
 |---|---|
-| `bot.py` | ربات تلگرام (python-telegram-bot) — به صورت مستقل اجرا می‌شود |
+| `bot.py` | ربات تلگرام (Telethon) — به صورت مستقل اجرا می‌شود |
 | `app.py` | پنل مدیریت (Streamlit) |
+| `sender.py` | ارسال پیام از پنل از طریق Telethon |
+| `tg_client.py` | ساخت کلاینت مشترک Telethon |
 | `database.py` | دیتابیس SQLite مشترک (کاربران و پیام‌ها) |
-| `config.py` | خواندن/ذخیره توکن و تنظیمات |
+| `config.py` | خواندن/ذخیره توکن، api credentials و پروکسی |
 
 ## راه‌اندازی
 
@@ -20,17 +25,27 @@
 pip install -r requirements.txt
 ```
 
-### ۲. دریافت توکن
+### ۲. دریافت توکن و api credentials
 
-در تلگرام به [@BotFather](https://t.me/BotFather) پیام بدهید، با `/newbot`
-یک ربات بسازید و توکن را بردارید. سپس:
+**توکن ربات:** در تلگرام به [@BotFather](https://t.me/BotFather) پیام بدهید،
+با `/newbot` یک ربات بسازید و توکن را بردارید.
 
-```powershell
-Copy-Item .env.example .env
-# فایل .env را باز کنید و توکن را جایگزین کنید
+**api_id و api_hash:** به [my.telegram.org](https://my.telegram.org) بروید،
+وارد شوید، از **API development tools** یک اپلیکیشن بسازید و
+`api_id` و `api_hash` را بردارید (فقط یک بار لازم است).
+
+سپس فایل `.env` را کامل کنید:
+
+```
+TELEGRAM_BOT_TOKEN=...
+API_ID=...
+API_HASH=...
+PROXY_URL=https://t.me/proxy?server=...&port=...&secret=...
 ```
 
-(یا فقط پنل را باز کنید و توکن را در سایدبار وارد و ذخیره کنید.)
+> `PROXY_URL` اختیاری است — لینک پروکسی MTProto تلگرام یا
+> `socks5://127.0.0.1:1080` یا `http://...`. اگر اینترنت شما بدون پروکسی
+> به تلگرام دسترسی دارد، خالی بگذارید.
 
 ### ۳. اجرا
 
